@@ -1,4 +1,143 @@
-# 결합된 CB,CF와 AutoEncoder를 이용한 유사곡 추천 모델
+# 2. CB로 sparsity 해결을 시도한 AutoEncoder for CF
+
+
+
+## Introduction
+
+일반적으로 CB와 CF를 함께 쓴 추천 시스템이라고 한다면 CB로 일부를, CF로 일부를 추천한 후 합쳐서 제시한다.
+
+그러나 CF 모델에 넣기에는 user가 가진 정보가 부족해서 노래를 제대로 추천해주지 못하는 경우가 생겼다.
+
+CB만으로 추천한 모델보다는 CF를 이용한 모델이 점수가 더 높은데, CF는 tag 점수가 너무 약했다. 태그 점수도 올리면서 music nDCG까지 올릴 방법 + sparse함을 해결할 방법 을 생각해보다가 (모델은 바꾸지 않고) **CB를 통해 노래를 추천한 후, 이를 query에 결합하여 CF의 input으로 사용해보자** ! 하는 아이디어가 떠올랐다.
+
+단순히 CB와 CF를 합친 것 보다 좋은 성능을 발휘했다 !
+
+
+
+## 1 ) Content-based Recommendation
+
+AutoEncoder를 이용하여 1024차원의 embedding vector를 생성하고 cosine similarity를 이용하여 유사한 노래를 찾는다.
+
+![image-20201108011245060](fig/image-20201108011245060.png)
+
+1. 발매 년도, 발매 월, 장르, 고빈도 태그를 이용하여 457차원의 one-hot vector를 생성한다.
+
+2. `457 > 512 > 512 > 1024 > 512 > 512 > 457` 으로 차원을 확장하였다가 줄이는 구조를 가진 AutoEncoder를 이용하여 학습한다.
+
+   > decoder의 가중치는 encoder 가중치를 그대로 이용한다.
+
+   ```python
+   non_linearity_type = "relu"
+   drop_prob = 0.8
+   weight_decay = 0.0001
+   lr = 0.0001
+   num_epochs = 50
+   batch_size = 128
+   
+   optimizer = optim.Adam()  
+   loss = loss1 + loss2*3  where loss1 = nn.MSEloss(inputs, outputs, reduction = 'sum')
+   							  loss2 = nn.MSEloss(inputs, outputs, reduction = 'mean')
+   ```
+
+3. encoder를 통해 song embedding을 추출한 후 cosine similarity를 계산하여 가장 유사한 노래부터 내림차순으로 정렬하여 저장한다.
+
+
+
+## 2 ) Collaborative Filtering
+
+![image-20201108012520829](fig/image-20201108012520829.png)
+
+1. 약 27개의 곡을 이용하여 one hot vector를 생성한다.
+
+2. `277,218 > 1024 > 277,218` 구조의 AutoEncoder를 이용하여 학습시킨다.
+
+   > encoder와 decoder 가중치는 독립적으로 학습한다.
+
+   ```python
+   non_linearity_type = "selu"
+   drop_prob = 0.8
+   weight_decay = 0
+   lr = 0.2
+   num_epochs = 45
+   batch_size = 1024
+   
+   optimizer = SGD , momentum = 0.6
+   loss = loss1 + loss2*50  where loss1 = nn.MSEloss(inputs, outputs, reduction = 'sum')
+   						 	   loss2 = nn.MSEloss(inputs, outputs, reduction = 'mean')
+   ```
+
+   
+
+## Evaluation
+
+> sparse한 validation을 **Content-based recommendation을 통해 약간 더 dense하게 만들어 준 뒤 CF를 진행**합니다.
+
+![image-20201108004704580](fig/image-20201108004704580.png)
+
+1. Query를 one hot vector로 만든다.
+
+2. Query에 포함된 모든 곡에 대하여 각 1개 ~ 3개의 유사곡을 찾아 추천한다. `Content_based_recommendation`
+
+3. `Content_based_recommendation`에 속한 곡을 이용하여 **Query vector를 채운다**. `Query*`
+
+   > query에는 정보가 부족한 경우가 많다. **Content based로 추천한 결과를 Query에 더해줌으로써 CF 추천 결과의 성능을 높이고자 하였다.** 3번 과정을 통해 Query 내에 약 100개의 노래가 포함되도록 한다.
+
+4. `Query*`를 AutoEncoder에 넣어 점수를 내림차순 한 후 노래를 추천한다.
+
+5. 추천한 곡들과 가장 많이 매칭된 tag를 찾아 10개를 추천한다.
+
+
+
+* 만약 Query에 노래가 없을 경우
+  1. tag가 있다면 해당 tag와 많이 매칭된 곡을 찾아 100곡을 추천한다.
+  2. tag가 없다면 train set에서 가장 많이 등장한 100곡을 찾아 추천한다.
+
+
+
+## Score
+
+```python
+Music nDCG: 0.103753
+Tag nDCG: 0.302064
+Score: 0.133499
+```
+
+
+
+:raising_hand_woman: **둘 중 하나만을 이용하거나, 단순히 섞기만 해서는 위와 같은 점수를 낼 수 없다.**
+
+Content-based의 결과를 Query vector에 포함해서 CF model에 넣는 방식이 미미하지만 성능 향상에 영향을 끼쳤다고 볼 수 있다.
+
+1. **CF만을 이용해서 추천했을 경우** :  노래는 잘 맞추지만 태그 성능이 좋지 않음.
+
+   ```python
+   Music nDCG: 0.0984524
+   Tag nDCG: 0.17614
+   Score: 0.110106
+   ```
+
+2. **CB만을 이용해서 추천했을 경우** :  tag는 잘 맞추지만 노래 점수는 크게 하락함.
+
+   ```python
+   Music nDCG: 0.0675142
+   Tag nDCG: 0.338713
+   Score: 0.108194
+   ```
+
+3. **두 방법을 단순히 함께 이용한 경우** : 30곡 이하이면 2곡씩, 30곡 이상이면 1곡씩 CB로 추천, 나머지는 CF로 추천
+
+   * CB로 많이 추천해줄 수록 tag 점수는 올라가지만 노래 점수는 하락함.
+   * 노래 점수는 CF만을 쓴 것 이상으로 올라갈 수 없었음.
+
+   ```python
+   Music nDCG: 0.0890984
+   Tag nDCG: 0.282032
+   Score: 0.118038
+   ```
+  
+  
+
+# 3. 결합된 CB,CF와 AutoEncoder를 이용한 유사곡 추천 모델
 ## Introduction
 
 * 노래 embedding 자체에 user들이 제공한 정보를 포함할 수는 없을까?
