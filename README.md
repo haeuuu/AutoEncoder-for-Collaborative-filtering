@@ -1,5 +1,12 @@
 # :musical_note: CB로 sparsity 해결을 시도한 AutoEncoder for CF
 
+```python
+# 12.16 수정 결과
+Music nDCG: 0.187719
+Tag nDCG: 0.387189
+Score: 0.217639
+```
+
 ## Introduction
 
 일반적으로 CB와 CF를 함께 쓴 추천 시스템이라고 한다면 CB로 일부를, CF로 일부를 추천한 후 합쳐서 제시한다.
